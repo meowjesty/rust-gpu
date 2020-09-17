@@ -20,6 +20,13 @@ pub enum LinkerError {
         import_type: String,
         export_type: String,
     },
+    #[error("Decoration mismatch for {:?}, imported with type {:?}, exported with type {:?}; {:?}", .name, .import_type, .export_type, .decorations)]
+    DecorateMismatch {
+        name: String,
+        import_type: String,
+        export_type: String,
+        decorations: Vec<String>,
+    },
     #[error("unknown data store error")]
     Unknown,
 }
@@ -240,7 +247,7 @@ fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
             // remove annotations later
             kill_annotations.push(before_id);
 
-            def_use_analyzer.for_each_use(before_id, |inst| {
+            def_use_analyzer.for_each_use_mut(before_id, |_, inst| {
                 if inst.result_type == Some(before_id) {
                     inst.result_type = Some(after_id);
                 }
@@ -418,14 +425,16 @@ impl LinkInfo {
     /// returns the list of matching import / export pairs after validation the list of potential pairs
     fn ensure_matching_import_export_pairs(
         &self,
-        defs: &DefUseAnalyzer,
+        def_use: &DefUseAnalyzer,
     ) -> Result<&Vec<ImportExportPair>> {
-        for pair in &self.potential_pairs {
-            let import_result_type = defs.def(pair.import.type_id).unwrap().1;
-            let export_result_type = defs.def(pair.export.type_id).unwrap().1;
+        use rspirv::binary::Assemble;
 
-            let imp = trans_aggregate_type(defs, import_result_type);
-            let exp = trans_aggregate_type(defs, export_result_type);
+        for pair in &self.potential_pairs {
+            let import_result_type = dbg!(def_use.def(pair.import.type_id).unwrap().1);
+            let export_result_type = dbg!(def_use.def(pair.export.type_id).unwrap().1);
+
+            let imp = trans_aggregate_type(def_use, import_result_type);
+            let exp = trans_aggregate_type(def_use, export_result_type);
 
             if imp != exp {
                 return Err(LinkerError::TypeMismatch {
@@ -444,8 +453,58 @@ impl LinkInfo {
                 if !import_param.is_type_identical(export_param) {
                     panic!("Type error in signatures")
                 }
+            }
 
-                // jb-todo: validate that OpDecoration is identical too
+            // jb-todo: doesn't validate OpDecorateGroup, and doesn't validate on parameters yet (just directly on exported type)
+
+            let sanitize_decoration = |inst: &rspirv::dr::Instruction| -> Vec<u32> {
+                let mut inst = inst.clone();
+
+                // clear out IdRef because they'll always mismatch
+                match &mut inst.operands[0] {
+                    rspirv::dr::Operand::IdRef(w) => *w = 0,
+                    _ => panic!("Expected ID"),
+                }
+
+                inst.assemble()
+            };
+
+            let mut import_decorations = HashSet::new();
+            let mut decoration_inst = HashMap::new();
+            def_use.for_each_use(import_result_type.result_id.unwrap(), |inst_idx, inst| {
+                if inst.class.opcode == spirv::Op::Decorate {
+                    let k = sanitize_decoration(inst);
+                    import_decorations.insert(k.clone());
+                    decoration_inst.insert(k, inst.clone());
+                }
+            });
+
+            let mut export_decorations = HashSet::new();
+            def_use.for_each_use(export_result_type.result_id.unwrap(), |inst_idx, inst| {
+                if inst.class.opcode == spirv::Op::Decorate {
+                    let k = sanitize_decoration(inst);
+                    export_decorations.insert(k.clone());
+                    decoration_inst.insert(k, inst.clone());
+                }
+            });
+
+            let diff = import_decorations
+                .symmetric_difference(&export_decorations)
+                .collect::<HashSet<_>>();
+            let mut decorations = vec![];
+
+            for d in diff {
+                let inst = &decoration_inst[d];
+                decorations.push(inst.disassemble());
+            }
+
+            if !decorations.is_empty() {
+                return Err(LinkerError::DecorateMismatch {
+                    name: pair.import.name.clone(),
+                    import_type: cleanup_type(import_result_type.clone()),
+                    export_type: cleanup_type(export_result_type.clone()),
+                    decorations: decorations,
+                });
             }
         }
 
@@ -518,21 +577,40 @@ impl<'a> DefUseAnalyzer<'a> {
         Some((idx, self.instructions.get(idx)?))
     }
 
-    fn for_each_use<F>(&mut self, id: u32, mut f: F)
+    fn for_each_use_mut<F>(&mut self, id: u32, mut f: F)
     where
-        F: FnMut(&mut rspirv::dr::Instruction),
+        F: FnMut(usize, &mut rspirv::dr::Instruction),
     {
         // find by `result_type`
         if let Some(use_result_type_id) = self.use_result_type_ids.get(&id) {
             for inst_idx in use_result_type_id {
-                f(&mut self.instructions[*inst_idx])
+                f(*inst_idx, &mut self.instructions[*inst_idx])
             }
         }
 
         // find by operand
         if let Some(use_id) = self.use_ids.get(&id) {
             for inst_idx in use_id {
-                f(&mut self.instructions[*inst_idx]);
+                f(*inst_idx, &mut self.instructions[*inst_idx]);
+            }
+        }
+    }
+
+    fn for_each_use<F>(&self, id: u32, mut f: F)
+    where
+        F: FnMut(usize, &rspirv::dr::Instruction),
+    {
+        // find by `result_type`
+        if let Some(use_result_type_id) = self.use_result_type_ids.get(&id) {
+            for inst_idx in use_result_type_id {
+                f(*inst_idx, &self.instructions[*inst_idx])
+            }
+        }
+
+        // find by operand
+        if let Some(use_id) = self.use_ids.get(&id) {
+            for inst_idx in use_id {
+                f(*inst_idx, &self.instructions[*inst_idx]);
             }
         }
     }

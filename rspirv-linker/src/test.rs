@@ -314,7 +314,7 @@ mod test {
     }
 
     //jb-todo: this isn't validated yet in the linker (see ensure_matching_import_export_pairs)
-    /*#[test]
+    #[test]
     fn decoration_mismatch() -> Result<()> {
         let a = assemble_spirv(
             r#"OpCapability Linkage
@@ -336,10 +336,15 @@ mod test {
         let result = assemble_and_link(&[&a, &b], &Options::default());
         assert_eq!(
             result.err(),
-            Some(LinkerError::MultipleExports("foo".to_string()))
+            Some(LinkerError::DecorateMismatch {
+                name: "foo".to_string(),
+                import_type: "OpTypeFloat 32".to_string(),
+                export_type: "OpTypeFloat 32".to_string(),
+                decorations: ["OpDecorate %2 Constant".to_string()].to_vec()
+            })
         );
         Ok(())
-    }*/
+    }
 
     #[test]
     fn func_ctrl() -> Result<()> {
