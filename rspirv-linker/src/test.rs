@@ -313,7 +313,6 @@ mod test {
         Ok(())
     }
 
-    //jb-todo: this isn't validated yet in the linker (see ensure_matching_import_export_pairs)
     #[test]
     fn decoration_mismatch() -> Result<()> {
         let a = assemble_spirv(
