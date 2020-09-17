@@ -471,7 +471,7 @@ impl LinkInfo {
 
             let mut import_decorations = HashSet::new();
             let mut decoration_inst = HashMap::new();
-            def_use.for_each_use(import_result_type.result_id.unwrap(), |inst_idx, inst| {
+            def_use.for_each_use(import_result_type.result_id.unwrap(), |_, inst| {
                 if inst.class.opcode == spirv::Op::Decorate {
                     let k = sanitize_decoration(inst);
                     import_decorations.insert(k.clone());
@@ -480,7 +480,7 @@ impl LinkInfo {
             });
 
             let mut export_decorations = HashSet::new();
-            def_use.for_each_use(export_result_type.result_id.unwrap(), |inst_idx, inst| {
+            def_use.for_each_use(export_result_type.result_id.unwrap(), |_, inst| {
                 if inst.class.opcode == spirv::Op::Decorate {
                     let k = sanitize_decoration(inst);
                     export_decorations.insert(k.clone());
