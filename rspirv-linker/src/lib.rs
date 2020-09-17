@@ -195,7 +195,9 @@ fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
             .enumerate()
             .skip(continue_from_idx)
         {
-            let (inst_idx, inst) = def_use_analyzer.def(module_inst.result_id.unwrap());
+            let (inst_idx, inst) = def_use_analyzer
+                .def(module_inst.result_id.unwrap())
+                .unwrap();
 
             if inst.class.opcode == spirv::Op::Nop {
                 continue;
@@ -312,7 +314,10 @@ fn inst_fully_eq(a: &rspirv::dr::Instruction, b: &rspirv::dr::Instruction) -> bo
         && a.operands == b.operands
 }
 
-fn find_import_export_pairs(module: &rspirv::dr::Module, defs: &DefAnalyzer) -> Result<LinkInfo> {
+fn find_import_export_pairs(
+    module: &rspirv::dr::Module,
+    defs: &DefUseAnalyzer,
+) -> Result<LinkInfo> {
     let mut imports = vec![];
     let mut exports: HashMap<String, Vec<LinkSymbol>> = HashMap::new();
 
@@ -335,7 +340,8 @@ fn find_import_export_pairs(module: &rspirv::dr::Module, defs: &DefAnalyzer) -> 
 
             let def_inst = defs
                 .def(id)
-                .expect(&format!("Need a matching op for ID {}", id));
+                .expect(&format!("Need a matching op for ID {}", id))
+                .1;
 
             let (type_id, parameters) = match def_inst.class.opcode {
                 spirv::Op::Variable => (def_inst.result_type.unwrap(), vec![]),
@@ -412,11 +418,11 @@ impl LinkInfo {
     /// returns the list of matching import / export pairs after validation the list of potential pairs
     fn ensure_matching_import_export_pairs(
         &self,
-        defs: &DefAnalyzer,
+        defs: &DefUseAnalyzer,
     ) -> Result<&Vec<ImportExportPair>> {
         for pair in &self.potential_pairs {
-            let import_result_type = defs.def(pair.import.type_id).unwrap();
-            let export_result_type = defs.def(pair.export.type_id).unwrap();
+            let import_result_type = defs.def(pair.import.type_id).unwrap().1;
+            let export_result_type = defs.def(pair.export.type_id).unwrap().1;
 
             let imp = trans_aggregate_type(defs, import_result_type);
             let exp = trans_aggregate_type(defs, export_result_type);
@@ -447,42 +453,15 @@ impl LinkInfo {
     }
 }
 
-struct DefAnalyzer {
-    def_ids: HashMap<u32, rspirv::dr::Instruction>,
-}
-
-impl DefAnalyzer {
-    fn new(module: &rspirv::dr::Module) -> Self {
-        let mut def_ids = HashMap::new();
-
-        module.all_inst_iter().for_each(|inst| {
-            if let Some(def_id) = inst.result_id {
-                def_ids
-                    .entry(def_id)
-                    .and_modify(|stored_inst| {
-                        *stored_inst = inst.clone();
-                    })
-                    .or_insert(inst.clone());
-            }
-        });
-
-        Self { def_ids }
-    }
-
-    fn def(&self, id: u32) -> Option<&rspirv::dr::Instruction> {
-        self.def_ids.get(&id)
-    }
-}
-
 struct DefUseAnalyzer<'a> {
     def_ids: HashMap<u32, usize>,
     use_ids: HashMap<u32, Vec<usize>>,
     use_result_type_ids: HashMap<u32, Vec<usize>>,
-    instructions: &'a mut [rspirv::dr::Instruction]
+    instructions: &'a mut [rspirv::dr::Instruction],
 }
 
 impl<'a> DefUseAnalyzer<'a> {
-    fn new(instructions: &'a mut [rspirv::dr::Instruction]) -> Self{
+    fn new(instructions: &'a mut [rspirv::dr::Instruction]) -> Self {
         let mut def_ids = HashMap::new();
         let mut use_ids: HashMap<u32, Vec<usize>> = HashMap::new();
         let mut use_result_type_ids: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -526,21 +505,23 @@ impl<'a> DefUseAnalyzer<'a> {
             def_ids,
             use_ids,
             use_result_type_ids,
-            instructions
+            instructions,
         }
     }
 
-    fn def_idx(&self, id: u32) -> usize {
-        self.def_ids[&id]
+    fn def_idx(&self, id: u32) -> Option<usize> {
+        self.def_ids.get(&id).map(|s| *s)
     }
 
-    fn def(&self, id: u32) -> (usize, &rspirv::dr::Instruction) {
-        let idx = self.def_idx(id);
-        (idx, &self.instructions[idx])
+    fn def(&self, id: u32) -> Option<(usize, &rspirv::dr::Instruction)> {
+        let idx = self.def_idx(id)?;
+        Some((idx, self.instructions.get(idx)?))
     }
 
-    fn for_each_use<F>(&mut self, id: u32, mut f: F) 
-    where F: FnMut(&mut rspirv::dr::Instruction) {
+    fn for_each_use<F>(&mut self, id: u32, mut f: F)
+    where
+        F: FnMut(&mut rspirv::dr::Instruction),
+    {
         // find by `result_type`
         if let Some(use_result_type_id) = self.use_result_type_ids.get(&id) {
             for inst_idx in use_result_type_id {
@@ -697,7 +678,14 @@ fn sort_globals(module: &mut rspirv::dr::Module) {
         }
     }
 
-    let defs = DefAnalyzer::new(&module);
+    let mut instructions = module
+        .types_global_values // only need to collect globals for this, since we only care about their defs
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+
+    let defs = DefUseAnalyzer::new(&mut instructions);
 
     let mut new_types_global_values = vec![];
 
@@ -710,7 +698,7 @@ fn sort_globals(module: &mut rspirv::dr::Module) {
         v.sort();
 
         for result_id in v {
-            new_types_global_values.push(defs.def(result_id).unwrap().clone());
+            new_types_global_values.push(defs.def(result_id).unwrap().1.clone());
         }
     }
 
@@ -814,7 +802,7 @@ enum AggregateType {
     Aggregate(Vec<AggregateType>),
 }
 
-fn op_def(def: &DefAnalyzer, operand: &rspirv::dr::Operand) -> rspirv::dr::Instruction {
+fn op_def(def: &DefUseAnalyzer, operand: &rspirv::dr::Operand) -> rspirv::dr::Instruction {
     def.def(match operand {
         rspirv::dr::Operand::IdMemorySemantics(w)
         | rspirv::dr::Operand::IdScope(w)
@@ -822,6 +810,7 @@ fn op_def(def: &DefAnalyzer, operand: &rspirv::dr::Operand) -> rspirv::dr::Instr
         _ => panic!("Expected ID"),
     })
     .unwrap()
+    .1
     .clone()
 }
 
@@ -841,7 +830,7 @@ fn extract_literal_u32(op: &rspirv::dr::Operand) -> u32 {
 }
 
 fn trans_aggregate_type(
-    def: &DefAnalyzer,
+    def: &DefUseAnalyzer,
     inst: &rspirv::dr::Instruction,
 ) -> Option<AggregateType> {
     Some(match inst.class.opcode {
@@ -945,8 +934,14 @@ pub fn link(inputs: &mut [&mut rspirv::dr::Module], opts: &Options) -> Result<rs
 
     let mut output = loader.module();
 
+    let mut instructions = output
+        .all_inst_iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_boxed_slice(); // force boxed slice so we don't accidentally grow or shrink it later
+
     // find import / export pairs
-    let defs = DefAnalyzer::new(&output);
+    let defs = DefUseAnalyzer::new(&mut instructions);
     let info = find_import_export_pairs(&output, &defs)?;
 
     // ensure import / export pairs have matching types and defintions
