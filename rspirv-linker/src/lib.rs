@@ -174,6 +174,10 @@ fn kill_annotations_and_debug(module: &mut rspirv::dr::Module, id: u32) {
     kill_with_id(&mut module.debugs, id);
 }
 
+fn op_nop() -> rspirv::dr::Instruction {
+    rspirv::dr::Instruction::new(spirv::Op::Nop, None, None, vec![])
+}
+
 fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
     use rspirv::binary::Assemble;
 
@@ -269,8 +273,7 @@ fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
             // this loop / system works on the assumption that all indices remain valid,
             // so instead of removing the instruction we just nop it out - `consume_instruction` will then
             // skip all OpNops and they won't appear in the newly constructed module
-            def_use_analyzer.instructions[before_idx] =
-                rspirv::dr::Instruction::new(spirv::Op::Nop, None, None, vec![]);
+            def_use_analyzer.instructions[before_idx] = op_nop();
         } else {
             break;
         }
@@ -430,8 +433,8 @@ impl LinkInfo {
         use rspirv::binary::Assemble;
 
         for pair in &self.potential_pairs {
-            let import_result_type = dbg!(def_use.def(pair.import.type_id).unwrap().1);
-            let export_result_type = dbg!(def_use.def(pair.export.type_id).unwrap().1);
+            let import_result_type = def_use.def(pair.import.type_id).unwrap().1;
+            let export_result_type = def_use.def(pair.export.type_id).unwrap().1;
 
             let imp = trans_aggregate_type(def_use, import_result_type);
             let exp = trans_aggregate_type(def_use, export_result_type);
@@ -1025,6 +1028,11 @@ pub fn link(inputs: &mut [&mut rspirv::dr::Module], opts: &Options) -> Result<rs
     // ensure import / export pairs have matching types and defintions
     let matching_pairs = info.ensure_matching_import_export_pairs(&defs)?;
 
+    // give up `defs` & `instructions` because right below we're removing things
+    // from the module, so their's view of the world won't match anymore
+    drop(defs);
+    drop(instructions);
+
     // remove duplicates (https://github.com/KhronosGroup/SPIRV-Tools/blob/e7866de4b1dc2a7e8672867caeb0bdca49f458d3/source/opt/remove_duplicates_pass.cpp)
     remove_duplicate_capablities(&mut output);
     remove_duplicate_ext_inst_imports(&mut output);
@@ -1059,4 +1067,134 @@ pub fn link(inputs: &mut [&mut rspirv::dr::Module], opts: &Options) -> Result<rs
 
     // output the module
     Ok(output)
+}
+
+use std::collections::VecDeque;
+
+fn add_calls(f: &rspirv::dr::Function, roots: &mut VecDeque<u32>) {
+    for bb in &f.blocks {
+        for inst in &bb.instructions {
+            if inst.class.opcode == spirv::Op::FunctionCall {
+                roots.push_back(match inst.operands[0] {
+                    rspirv::dr::Operand::IdRef(w) => w,
+                    _ => panic!("Invalid OpFunctionCall"),
+                })
+            }
+        }
+    }
+}
+
+fn process_reachable_calls<F>(module: &rspirv::dr::Module, mut f: F)
+where
+    F: FnMut(usize, &rspirv::dr::Function),
+{
+    let mut roots = VecDeque::new();
+
+    for entry_point in &module.entry_points {
+        match &entry_point.operands[1] {
+            rspirv::dr::Operand::IdRef(w) => roots.push_back(*w),
+            _ => panic!("Badly formed entry point"),
+        }
+    }
+
+    // jb-todo: add linked functions
+
+    let mut functions = HashMap::new();
+    for (idx, f) in module.functions.iter().enumerate() {
+        let id = f.def.as_ref().unwrap().result_id.unwrap();
+        functions.insert(id, idx);
+    }
+
+    let mut done = HashSet::new();
+    loop {
+        let top = if let Some(top) = roots.pop_front() {
+            top
+        } else {
+            break;
+        };
+
+        if done.insert(top) {
+            let fn_idx = functions[&top];
+            let func = &module.functions[fn_idx];
+            f(fn_idx, func);
+            add_calls(func, &mut roots);
+        }
+    }
+}
+
+fn nop_recursively(def_use: &mut DefUseAnalyzer, inst: u32) {
+    let mut queue = VecDeque::new();
+    queue.push_back(inst);
+
+    let mut nop_list = VecDeque::new();
+    let mut seen = HashSet::new();
+
+    loop {
+        let id = if let Some(id) = queue.pop_front() {
+            id
+        } else {
+            break;
+        };
+
+        let inst_idx = def_use.def_idx(id).unwrap();
+        let inst = &mut def_use.instructions[inst_idx];
+
+        def_use.for_each_use(id, |idx, inst| {
+            if seen.insert(idx) {
+                nop_list.push_back(idx);
+            }
+        });
+    }
+
+    for nop_idx in nop_list {
+        def_use.instructions[nop_idx] = op_nop();
+    }
+}
+
+pub fn dead_function_eliminate(module: &rspirv::dr::Module) -> rspirv::dr::Module {
+    let mut reached = HashSet::new();
+
+    process_reachable_calls(&module, |fn_idx, _| {
+        reached.insert(fn_idx);
+    });
+
+    let mut instructions = module
+        .all_inst_iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_boxed_slice(); // force boxed slice so we don't accidentally grow or shrink it later
+
+    let mut def_use = DefUseAnalyzer::new(&mut instructions);
+
+    for (fn_idx, func) in module.functions.iter().enumerate() {
+        if !reached.contains(&fn_idx) {
+            let fn_id = func.def.as_ref().unwrap().result_id.unwrap();
+            let inst_idx = def_use.def_idx(fn_id).unwrap();
+
+            let mut iter_idx = inst_idx;
+            loop {
+                let inst = &def_use.instructions[iter_idx];
+
+                if inst.class.opcode == spirv::Op::FunctionEnd {
+                    break;
+                }
+
+                if let Some(result_id) = inst.result_id {
+                    nop_recursively(&mut def_use, result_id);
+                }
+
+                def_use.instructions[iter_idx] = op_nop();
+
+                iter_idx += 1;
+            }
+        }
+    }
+
+    let mut loader = rspirv::dr::Loader::new();
+
+    for inst in def_use.instructions.iter() {
+        loader.consume_instruction(inst.clone());
+    }
+
+    loader.module()
 }

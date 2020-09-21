@@ -1,4 +1,4 @@
-use crate::link;
+use crate::{dead_function_eliminate, link};
 
 // https://github.com/colin-kiegel/rust-pretty-assertions/issues/24
 #[derive(PartialEq, Eq)]
@@ -78,6 +78,15 @@ fn assemble_and_link(
     link(&mut modules, opts)
 }
 
+fn assemble_and_dead_function_eliminate(binary: &[u8]) -> rspirv::dr::Module {
+    use rspirv::binary::Disassemble;
+
+    let mut module = load(binary);
+    // println!("{}", module.disassemble());
+
+    dead_function_eliminate(&module)
+}
+
 fn without_header_eq(mut result: rspirv::dr::Module, expected: &str) {
     use rspirv::binary::Disassemble;
     //use rspirv::binary::Assemble;
@@ -112,9 +121,9 @@ fn without_header_eq(mut result: rspirv::dr::Module, expected: &str) {
 }
 
 mod test {
-    use crate::test::assemble_and_link;
     use crate::test::assemble_spirv;
     use crate::test::without_header_eq;
+    use crate::test::{assemble_and_dead_function_eliminate, assemble_and_link};
     use crate::LinkerError;
     use crate::Options;
     use crate::Result;
@@ -514,6 +523,71 @@ mod test {
         OpReturn
         OpFunctionEnd"#;
 
+        without_header_eq(result, expect);
+        Ok(())
+    }
+
+    #[test]
+    fn dce() -> Result<()> {
+        let a = assemble_spirv(
+            r#"OpCapability Shader
+            %1 = OpExtInstImport "GLSL.std.450"
+            OpMemoryModel Logical GLSL450
+            OpEntryPoint Fragment %2 "main" %3
+            OpExecutionMode %2 OriginUpperLeft
+            OpSource GLSL 330
+            OpName %2 "main"
+            OpName %4 "test"
+            OpName %3 "gl_FragColor"
+            OpDecorate %3 Location 0
+            %5 = OpTypeVoid
+            %6 = OpTypeFunction %5
+            %7 = OpTypeFloat 32
+            %8 = OpTypeVector %7 4
+            %9 = OpTypePointer Output %8
+            %3 = OpVariable %9 Output
+            %10 = OpConstant %7 0.4
+            %11 = OpConstant %7 0.8
+            %12 = OpConstant %7 1.0
+            %13 = OpConstantComposite %8 %10 %10 %11 %12
+            %2 = OpFunction %5 None %6
+            %14 = OpLabel
+            OpStore %3 %13
+            OpReturn
+            OpFunctionEnd
+            %4 = OpFunction %5 None %6
+            %15 = OpLabel
+            OpReturn
+            OpFunctionEnd"#,
+        );
+
+        let result = assemble_and_dead_function_eliminate(&a);
+
+        let expect = r#"OpCapability Shader
+            %1 = OpExtInstImport "GLSL.std.450"
+            OpMemoryModel Logical GLSL450
+            OpEntryPoint Fragment %2 "main" %3
+            OpExecutionMode %2 OriginUpperLeft
+            OpSource GLSL 330
+            OpName %2 "main"
+            OpName %3 "gl_FragColor"
+            OpDecorate %3 Location 0
+            %5 = OpTypeVoid
+            %6 = OpTypeFunction %5
+            %7 = OpTypeFloat 32
+            %8 = OpTypeVector %7 4
+            %9 = OpTypePointer Output %8
+            %3 = OpVariable %9 Output
+            %10 = OpConstant %7 0.4
+            %11 = OpConstant %7 0.8
+            %12 = OpConstant %7 1.0
+            %13 = OpConstantComposite %8 %10 %10 %11 %12
+            %2 = OpFunction %5 None %6
+            %14 = OpLabel
+            OpStore %3 %13
+            OpReturn
+            OpFunctionEnd"#;
+            
         without_header_eq(result, expect);
         Ok(())
     }
