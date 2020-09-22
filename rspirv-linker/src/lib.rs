@@ -192,7 +192,10 @@ fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
     let mut kill_annotations = vec![];
     let mut continue_from_idx = 0;
 
-    // need to do this process iteratively because types can reference each other
+    // need to do this process iteratively because types can reference each other - eg.
+    // OpTypeFunction can reference an OpTypeFloat 32 that's declared earlier,
+    // if we find two OpTypeFloats and patch up that OpTypeFunction that references it
+    // we need to go through and detect if OpTypeFunction now became a duplicate type.
     loop {
         let mut dedup = std::collections::HashMap::new();
         let mut duplicate = None;
@@ -201,7 +204,7 @@ fn remove_duplicate_types(module: rspirv::dr::Module) -> rspirv::dr::Module {
             .types_global_values
             .iter()
             .enumerate()
-            .skip(continue_from_idx)
+            .skip(continue_from_idx) // we can skip a significant portion of the types because we can assume that they appear in order
         {
             let (inst_idx, inst) = def_use_analyzer
                 .def(module_inst.result_id.unwrap())
