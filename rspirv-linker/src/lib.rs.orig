@@ -163,8 +163,7 @@ fn kill_annotations_and_debug(module: &mut rspirv::dr::Module, id: u32) {
     // need to remove OpGroupDecorate members that mention this id
     module.annotations.iter_mut().for_each(|inst| {
         if inst.class.opcode == spirv::Op::GroupDecorate {
-            inst.operands
-                .retain(|op| matches!(op, rspirv::dr::Operand::IdRef(w) if *w != id));
+            inst.operands.retain(|op| matches!(op, rspirv::dr::Operand::IdRef(w) if *w != id));
         }
     });
 
@@ -347,8 +346,12 @@ fn find_import_export_pairs(
 
             let def_inst = defs
                 .def(id)
-                .unwrap_or_else(|| panic!("Need a matching op for ID {}", id))
+<<<<<<< HEAD
+                .expect(&format!("Need a matching op for ID {}", id))
                 .1;
+=======
+                .unwrap_or_else(|| panic!("Need a matching op for ID {}", id));
+>>>>>>> main
 
             let (type_id, parameters) = match def_inst.class.opcode {
                 spirv::Op::Variable => (def_inst.result_type.unwrap(), vec![]),
@@ -466,6 +469,7 @@ impl LinkInfo {
                     _ => panic!("Expected ID"),
                 }
 
+<<<<<<< HEAD
                 inst.assemble()
             };
 
@@ -496,6 +500,16 @@ impl LinkInfo {
             for d in diff {
                 let inst = &decoration_inst[d];
                 decorations.push(inst.disassemble());
+=======
+        module.all_inst_iter().for_each(|inst| {
+            if let Some(def_id) = inst.result_id {
+                def_ids
+                    .entry(def_id)
+                    .and_modify(|stored_inst| {
+                        *stored_inst = inst.clone();
+                    })
+                    .or_insert_with(|| inst.clone());
+>>>>>>> main
             }
 
             if !decorations.is_empty() {
@@ -503,7 +517,7 @@ impl LinkInfo {
                     name: pair.import.name.clone(),
                     import_type: cleanup_type(import_result_type.clone()),
                     export_type: cleanup_type(export_result_type.clone()),
-                    decorations,
+                    decorations: decorations,
                 });
             }
         }
@@ -569,7 +583,7 @@ impl<'a> DefUseAnalyzer<'a> {
     }
 
     fn def_idx(&self, id: u32) -> Option<usize> {
-        self.def_ids.get(&id).copied()
+        self.def_ids.get(&id).map(|s| *s)
     }
 
     fn def(&self, id: u32) -> Option<(usize, &rspirv::dr::Instruction)> {
@@ -596,9 +610,15 @@ impl<'a> DefUseAnalyzer<'a> {
         }
     }
 
+<<<<<<< HEAD
     fn for_each_use<F>(&self, id: u32, mut f: F)
     where
         F: FnMut(usize, &rspirv::dr::Instruction),
+=======
+    fn for_each_use<F>(&mut self, id: u32, mut f: F)
+    where
+        F: FnMut(&mut rspirv::dr::Instruction),
+>>>>>>> main
     {
         // find by `result_type`
         if let Some(use_result_type_id) = self.use_result_type_ids.get(&id) {
@@ -663,17 +683,19 @@ fn kill_linkage_instructions(
 
     // drop linkage attributes (both import and export)
     kill_with(&mut module.annotations, |inst| {
-        let eq = pairs.iter().any(|p| {
-            if inst.operands.is_empty() {
-                return false;
-            }
+        let eq = pairs
+            .iter()
+            .any(|p| {
+                if inst.operands.is_empty() {
+                    return false;
+                }
 
-            if let rspirv::dr::Operand::IdRef(id) = inst.operands[0] {
-                id == p.import.id || id == p.export.id
-            } else {
-                false
-            }
-        });
+                if let rspirv::dr::Operand::IdRef(id) = inst.operands[0] {
+                    id == p.import.id || id == p.export.id
+                } else {
+                    false
+                }
+            });
 
         eq && inst.class.opcode == spirv::Op::Decorate
             && inst.operands[1]
@@ -701,7 +723,9 @@ fn compact_ids(module: &mut rspirv::dr::Module) -> u32 {
 
     let mut insert = |current_id: u32| -> u32 {
         let len = remap.len();
-        *remap.entry(current_id).or_insert_with(|| len as u32 + 1)
+        *remap.entry(current_id).or_insert_with(|| {
+            len as u32 + 1
+        })
     };
 
     module.all_inst_iter_mut().for_each(|inst| {
@@ -748,7 +772,12 @@ fn sort_globals(module: &mut rspirv::dr::Module) {
         }
     }
 
-    let mut instructions = module.types_global_values.to_vec().into_boxed_slice();
+    let mut instructions = module
+        .types_global_values // only need to collect globals for this, since we only care about their defs
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
     let defs = DefUseAnalyzer::new(&mut instructions);
 
@@ -814,7 +843,9 @@ fn trans_scalar_type(inst: &rspirv::dr::Instruction) -> Option<ScalarType> {
                 _ => panic!("Unexpected operand while parsing type"),
             },
             signed: match inst.operands[1] {
-                rspirv::dr::Operand::LiteralInt32(s) => s != 0,
+                rspirv::dr::Operand::LiteralInt32(s) => {
+                    s != 0
+                }
                 _ => panic!("Unexpected operand while parsing type"),
             },
         },
@@ -1085,7 +1116,13 @@ where
     }
 
     let mut done = HashSet::new();
-    while let Some(top) = roots.pop_front() {
+    loop {
+        let top = if let Some(top) = roots.pop_front() {
+            top
+        } else {
+            break;
+        };
+
         if done.insert(top) {
             let fn_idx = functions[&top];
             let func = &module.functions[fn_idx];
@@ -1102,11 +1139,17 @@ fn nop_recursively(def_use: &mut DefUseAnalyzer, inst: u32) {
     let mut nop_list = VecDeque::new();
     let mut seen = HashSet::new();
 
-    while let Some(id) = queue.pop_front() {
-        //let inst_idx = def_use.def_idx(id).unwrap();
-        //let inst = &mut def_use.instructions[inst_idx];
+    loop {
+        let id = if let Some(id) = queue.pop_front() {
+            id
+        } else {
+            break;
+        };
 
-        def_use.for_each_use(id, |idx, _| {
+        let inst_idx = def_use.def_idx(id).unwrap();
+        let inst = &mut def_use.instructions[inst_idx];
+
+        def_use.for_each_use(id, |idx, inst| {
             if seen.insert(idx) {
                 nop_list.push_back(idx);
             }

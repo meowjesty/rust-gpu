@@ -587,7 +587,7 @@ mod test {
             OpStore %3 %13
             OpReturn
             OpFunctionEnd"#;
-            
+
         without_header_eq(result, expect);
         Ok(())
     }
