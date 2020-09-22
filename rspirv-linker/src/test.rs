@@ -79,9 +79,9 @@ fn assemble_and_link(
 }
 
 fn assemble_and_dead_function_eliminate(binary: &[u8]) -> rspirv::dr::Module {
-    use rspirv::binary::Disassemble;
+   // use rspirv::binary::Disassemble;
 
-    let mut module = load(binary);
+    let module = load(binary);
     // println!("{}", module.disassemble());
 
     dead_function_eliminate(&module)
