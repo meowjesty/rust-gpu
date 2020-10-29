@@ -22,7 +22,7 @@ how to use and develop on Rust-GPU.
 
 1. Install [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools#downloads) and add it to your PATH (for now, eventually we will automatically build and link it instead of calling executables)
 
-1. Next, look at the [examples](examples) folder. There are two projects here: [examples/example-shader](examples/example-shader) and [examples/example-runner](examples/example-runner). The example-shader project is a "GPU crate", one that will be compiled to a SPIR-V module. The example-runner project is a normal, CPU crate that uses vulkan to consume the example-shader SPIR-V module to display a shader.
+1. Next, look at the [examples] folder. There are two projects here: [examples/example-shader] and [examples/example-runner]. The example-shader project is a "GPU crate", one that will be compiled to a SPIR-V module. The example-runner project is a normal, CPU crate that uses vulkan to consume the example-shader SPIR-V module to display a shader.
 
     Run the example:
 
@@ -32,9 +32,10 @@ how to use and develop on Rust-GPU.
 
     This will build `rustc_codegen_spirv`, the compiler, then use that compiler to build `example-shader` into a SPIR-V module, then finally, build a vulkan sample app (taken from [ash's examples](https://github.com/MaikKlein/ash/blob/master/examples/src/bin/triangle.rs)) using the built SPIR-V module to display the shader in a window.
 
-    All of this is orchestrated by the [spirv-builder](spirv-builder) crate, which is used in example-runner's `build.rs` file. Please look at that file, as well as both example projects in general, to see how to set up your own shaders!
+    All of this is orchestrated by the [spirv-builder] crate, which is used in example-runner's `build.rs` file. Please look at that file, as well as both example projects in general, to see how to set up your own shaders!
 
 Be aware that this project is in a very early phase - if the above doesn't work, please [file an issue](https://github.com/EmbarkStudios/rust-gpu/issues)!
+
 
 ## Getting started, for power users who don't want to use spirv-builder.
 
@@ -57,7 +58,11 @@ cargo build -Z build-std=core --target spirv-unknown-unknown --release
 
 This will produce a `target/spirv-unknown-unknown/release/crate_name.spv` file.
 
-To create a GPU crate, look at the [examples/example-shader](examples/example-shader) crate. In short, reference the `spirv-std` crate, and use intrinsics defined there to create your shader.
+To create a GPU crate, look at the [examples/example-shader] crate. In short, reference the `spirv-std` crate, and use intrinsics defined there to create your shader.
 
-This is all a little convoluted, hence the [spirv-builder](spirv-builder) crate handles a lot of this.
+This is all a little convoluted, hence the [spirv-builder] crate handles a lot of this.
 
+[examples]: https://github.com/EmbarkStudios/rust-gpu/blob/main/examples
+[examples/example-shader]: https://github.com/EmbarkStudios/rust-gpu/blob/main/examples/example-shader
+[examples/example-runner]: https://github.com/EmbarkStudios/rust-gpu/blob/main/examples/example-shader
+[spirv-builder]: https://github.com/EmbarkStudios/rust-gpu/blob/main/crates/spirv-builder
